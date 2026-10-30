@@ -16,8 +16,11 @@ if [ -f /.dockerenv ]; then echo "Running inside a Docker container"; fi
 
 echo "== GPU";     nvidia-smi --query-gpu=name,compute_cap,memory.total,memory.used,driver_version,power.limit --format=csv
 echo "== CUDA";    nvidia-smi | grep "CUDA Version"; nvcc --version 2>&1 | tail -1
+ls -d /usr/local/cuda* 2>/dev/null || echo "no /usr/local/cuda*"
 echo "== GCC";     gcc --version 2>&1 | head -1
-echo "== Python";  python3 --version; pip --version 2>&1
+echo "== Sudo";    if sudo -n true 2>/dev/null; then echo "passwordless sudo: yes"; else echo "passwordless sudo: no (may still work with a password)"; fi
+echo "== Python";  python3 --version; python3 -m pip --version 2>&1; python3 -m venv --help >/dev/null 2>&1 && echo "venv: ok" || echo "venv: missing (python3-venv)"
+command -v uv conda 2>/dev/null
 python3 - <<'EOF' 2>&1
 try:
     import torch
@@ -30,9 +33,13 @@ except ImportError:
     print("torch not installed")
 EOF
 echo "== CPU/RAM"; nproc; free -h | head -2
-echo "== Disk";    df -h ~ /tmp | sort -u
+echo "== Disk";    df -h ~ /tmp | uniq
 echo "== Tools";   for t in iverilog yosys docker git; do printf "%s: " "$t"; command -v "$t" || echo "not found"; done
 echo "== Net"
-for url in https://huggingface.co https://pypi.org https://download.pytorch.org; do
-    printf "%s: " "$url"; curl -sI -m 10 -o /dev/null -w "%{http_code}\n" "$url" || echo "UNREACHABLE"
+# -sS keeps curl quiet but prints the reason when a request fails
+for url in https://huggingface.co https://pypi.org/simple/ https://files.pythonhosted.org https://download.pytorch.org/whl/; do
+    printf "%s: " "$url"; curl -sS -I -m 15 -o /dev/null -w "%{http_code}\n" "$url" 2>&1
 done
+echo "proxy env: ${https_proxy:-${HTTPS_PROXY:-none}}"
+if command -v getent >/dev/null; then getent hosts pypi.org || echo "DNS: pypi.org does not resolve"; fi
+echo "(any HTTP code, even 403/404, means the host is reachable; 000 means it is not)"

@@ -52,7 +52,8 @@ Write-Output "Manufacturer: $($cs.Manufacturer) | Model: $($cs.Model)"
 Write-Output "HypervisorPresent: $($cs.HypervisorPresent)"
 $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
 Write-Output "VirtualizationFirmwareEnabled: $($cpu.VirtualizationFirmwareEnabled)"
-Write-Output "(If this is a VM, WSL2/Docker require nested virtualization enabled by the hypervisor)"
+Write-Output "(With Hyper-V/WSL2 running, VirtualizationFirmwareEnabled reads False on physical machines too;"
+Write-Output " if this is a VM, WSL2/Docker require nested virtualization enabled by the hypervisor)"
 
 Section "CPU / RAM"
 Write-Output "CPU: $($cpu.Name.Trim())"

@@ -3,3 +3,9 @@ daimai/
 ieee-ies-generative-ai-challenge/
 project_owui/
 vai_verilog_ai/
+vai-experiments-rtllm/
+dataset/
+# Heavy training artifacts; metrics and summaries stay committable
+runs/**/checkpoints/step*/
+runs/**/trainer_state.pt
+runs/**/longest.jsonl

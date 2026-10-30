@@ -1,0 +1,9 @@
+# Training dependencies. Install PyTorch with CUDA first, matching the driver, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+# then: pip install -r requirements-train.txt
+# After the first working install, freeze exact versions into a lock file for reproducibility.
+transformers>=4.56
+peft>=0.13
+tokenizers
+numpy
+nvidia-ml-py
