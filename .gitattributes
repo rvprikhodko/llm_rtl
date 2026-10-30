@@ -5,3 +5,7 @@
 # Windows scripts get CRLF in the working copy
 *.ps1 text eol=crlf
 *.docx binary
+# Files executed inside Linux containers keep LF
+*.Dockerfile text eol=lf
+.dockerignore text eol=lf
+compose.yaml text eol=lf

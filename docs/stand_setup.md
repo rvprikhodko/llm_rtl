@@ -1,155 +1,179 @@
 # Инструкция для стенда
 
-Все команды, кроме раздела 1, выполняются в Linux внутри WSL2 из корня репозитория `~/llm_rtl`.
+Обучение запускается в Docker-контейнере. В нём уже есть CUDA, PyTorch, transformers, peft, iverilog и Yosys,
+поэтому устанавливать что-либо в WSL или в Windows не требуется. Все команды выполняются в PowerShell
+из корня репозитория (далее `E:\llm_rtl`). Репозиторий подключается в контейнер как папка `/workspace`,
+поэтому все результаты сразу появляются на диске `E:`.
 
 Порядок работ:
 
-1. Отдельный дистрибутив WSL.
-2. Прокси.
-3. Системные пакеты.
-4. Репозитории и данные.
-5. Python-окружение.
-6. Проверка GPU.
-7. Фильтрация датасета с iverilog.
-8. Подбор `micro_batch_size`.
-9. Подбор LR.
-10. Основная серия.
-11. Перенос результатов.
+1. Проверка Docker и GPU.
+2. Прокси, Harbor и Nexus.
+3. Репозитории и данные.
+4. Сборка образа.
+5. Проверка GPU в контейнере.
+6. Фильтрация датасета с iverilog.
+7. Подбор `micro_batch_size`.
+8. Подбор LR.
+9. Основная серия.
+10. Результаты.
 
-## 1. Отдельный дистрибутив WSL (PowerShell в Windows)
+## 1. Проверка Docker и GPU
 
-Создать новый дистрибутив (можно пропустить):
+Убедитесь, что Docker Desktop запущен и контейнеры видят видеокарту:
 
 ```powershell
-wsl --install Ubuntu-24.04 --name llm-rtl
-wsl -d llm-rtl
+cd E:\llm_rtl
+powershell -ExecutionPolicy Bypass -File scripts\env_check.ps1 -DockerGpuTest > env_report.txt
 ```
 
-Важно:
+В разделе `Docker GPU test` отчёта должна быть таблица `nvidia-smi` с RTX 4070 Ti SUPER.
 
-- **`wsl --shutdown` или перезапуск Docker Desktop убьёт обучение.** Запуски умеют продолжаться с последнего чекпойнта (раздел 10).
-- **Код, данные и кэш моделей нужно держать в `~/` (ext4), а не на `/mnt/c` или `/mnt/e`.**
+Учтите: **`wsl --shutdown` или перезапуск Docker Desktop останавливает все контейнеры**, в том числе обучение.
+Запуски умеют продолжаться с последнего чекпойнта (раздел 9).
 
-## 2. Прокси
+## 2. Прокси, Harbor и Nexus
 
-Нужно прокинуть прокси
+Задайте переменные в текущем окне PowerShell. `docker compose` передаёт их и при сборке образа, и при запуске контейнеров:
 
-## 3. Системные пакеты
-
-```bash
-sudo apt update
-sudo apt install -y build-essential git curl tmux python3-venv python3-dev iverilog yosys
-iverilog -V | head -1; yosys -V
+```powershell
+$env:HTTP_PROXY  = "<адрес прокси>"
+$env:HTTPS_PROXY = "<адрес прокси>"
+$env:NO_PROXY    = "localhost,127.0.0.1"
+$env:BASE_IMAGE  = "<адрес Harbor>/nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04"
+$env:PIP_INDEX_URL = "<адрес PyPI-зеркала в Nexus>/simple"
 ```
 
-## 4. Репозитории и данные
+Задавайте только те переменные, которые нужны. Без `BASE_IMAGE` образ берётся с Docker Hub,
+без `PIP_INDEX_URL` пакеты ставятся с PyPI. PyTorch по умолчанию скачивается с `download.pytorch.org`.
+Если этот адрес недоступен, задайте `$env:TORCH_INDEX_URL = ""`: тогда PyTorch будет установлен из того же индекса, что и остальные пакеты.
 
-```bash
-cd ~
+Если прокси подменяет TLS-сертификаты, положите корпоративный сертификат (`*.crt`) в папку `docker\certs`
+до сборки образа.
+
+## 3. Репозитории и данные
+
+```powershell
+cd E:\
 git clone https://github.com/rvprikhodko/llm_rtl.git
 cd llm_rtl
 git clone https://hub.mos.ru/nltoverilog/vai-experiments-rtllm.git
-mkdir -p dataset
-curl -L -o dataset/Resyn27k.json https://raw.githubusercontent.com/hkust-zhiyao/RTL-Coder/main/dataset/Resyn27k.json
-sha256sum dataset/Resyn27k.json
+mkdir dataset
+curl.exe -L -o dataset\Resyn27k.json https://raw.githubusercontent.com/hkust-zhiyao/RTL-Coder/main/dataset/Resyn27k.json
+(Get-FileHash dataset\Resyn27k.json -Algorithm SHA256).Hash
 ```
 
-Ожидаемый SHA-256 датасета: `6f50e411a17e667520a6e6b6fefea59684b6cd469639483bf3440d557ace82ae`.
+Ожидаемый SHA-256 датасета: `6F50E411A17E667520A6E6B6FEFEA59684B6CD469639483BF3440D557ACE82AE`.
 
-## 5. Python-окружение
+## 4. Сборка образа
 
-```bash
-python3 -m venv ~/venvs/llm-rtl
-source ~/venvs/llm-rtl/bin/activate
-pip install --upgrade pip
-pip install torch
-pip install -r requirements-train.txt
-pip freeze > requirements-train.lock.txt
+```powershell
+docker compose build
+docker compose run --rm llm cat /opt/requirements-train.lock.txt > requirements-train.lock.txt
 ```
 
-`pip install torch` с PyPI под Linux ставит сборку с CUDA. Если оказалась CPU-сборка, нужно поставить явно:
-`pip install torch --index-url https://download.pytorch.org/whl/cu128`.
-Файл `requirements-train.lock.txt` где-то сохранить: это зафиксированные версии для раздела о воспроизводимости.
+Первая сборка занимает 10–20 минут: базовый образ CUDA и PyTorch весят несколько гигабайт.
+Файл `requirements-train.lock.txt` содержит точные версии пакетов. Сохраните его вместе с результатами:
+он нужен для раздела о воспроизводимости.
 
-Для удобства можно добавить в `~/.bashrc` строку `source ~/venvs/llm-rtl/bin/activate`.
+## 5. Проверка GPU в контейнере
 
-## 6. Проверка GPU
-
-```bash
-bash scripts/env_check.sh > env_report_wsl.txt 2>&1
-python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0), torch.cuda.is_bf16_supported())"
+```powershell
+docker compose run --rm llm python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0), torch.cuda.is_bf16_supported())"
 ```
 
 Ожидается: `True`, `NVIDIA GeForce RTX 4070 Ti SUPER`, `(8, 9)`, `True`.
 
-Можно скачать модель заранее, чтобы первый запуск не ждал загрузки около 3 ГБ:
+Скачайте модель заранее (около 3 ГБ), чтобы первый запуск не ждал загрузки. Модели хранятся в томе Docker `hf-cache`
+и не скачиваются повторно:
 
-```bash
-python -c "from transformers import AutoModelForCausalLM, AutoTokenizer as T; n='EleutherAI/pythia-1.4b'; T.from_pretrained(n, revision='step143000'); AutoModelForCausalLM.from_pretrained(n, revision='step143000')"
+```powershell
+docker compose run --rm llm python -c "from transformers import AutoModelForCausalLM, AutoTokenizer as T; n='EleutherAI/pythia-1.4b'; T.from_pretrained(n, revision='step143000'); AutoModelForCausalLM.from_pretrained(n, revision='step143000')"
 ```
 
-## 7. Фильтрация датасета с iverilog
+## 6. Фильтрация датасета с iverilog
 
-Набор `dataset/filtered` из локального прогона собран **без** проверки синтаксиса. На стенде его нужно пересобрать с iverilog и обучать только на этом результате:
+Набор `dataset/filtered`, собранный на другом компьютере, не прошёл проверку синтаксиса. На стенде его необходимо
+пересобрать с iverilog, и обучать модели следует только на этом результате:
 
-```bash
-python scripts/analyze_dataset.py dataset/Resyn27k.json --out dataset/analysis --rtllm vai-experiments-rtllm/datasets/trusted/rtllm-882030d9e61b7787/cases --iverilog --workers 32
-python scripts/filter_dataset.py dataset/Resyn27k.json --out dataset/filtered --rtllm vai-experiments-rtllm/datasets/trusted/rtllm-882030d9e61b7787/cases --iverilog --workers 32
+```powershell
+docker compose run --rm llm python scripts/analyze_dataset.py dataset/Resyn27k.json --out dataset/analysis --rtllm vai-experiments-rtllm/datasets/trusted/rtllm-882030d9e61b7787/cases --iverilog --workers 32
+docker compose run --rm llm python scripts/filter_dataset.py dataset/Resyn27k.json --out dataset/filtered --rtllm vai-experiments-rtllm/datasets/trusted/rtllm-882030d9e61b7787/cases --iverilog --workers 32
 ```
 
-Без iverilog осталось 23 366 записей. С ним станет меньше на число некомпилирующихся эталонов.
-Нужно сохранить `dataset/analysis/report.json` и `dataset/filtered/filter_report.json`: их цифры пойдут в сравнительный анализ.
+Без iverilog осталось 23 366 записей. С проверкой их станет меньше на число некомпилирующихся эталонов.
+Сохраните `dataset/analysis/report.json` и `dataset/filtered/filter_report.json`: эти цифры войдут в сравнительный анализ.
 
-## 8. Подбор micro_batch_size
+## 7. Подбор micro_batch_size
 
 Скрипт обучает по 3 шага на самых длинных примерах, поэтому измеренная пиковая память — оценка сверху:
 
-```bash
-python scripts/probe_microbatch.py --config configs/train/pythia-1.4b.json --output runs/probe/pythia-1.4b
+```powershell
+docker compose run --rm llm python scripts/probe_microbatch.py --config configs/train/pythia-1.4b.json --output runs/probe/pythia-1.4b
 ```
 
-Рекомендованное значение нужно вписать в `configs/train/pythia-1.4b.json` (`micro_batch_size`).
+Впишите рекомендованное значение в `configs/train/pythia-1.4b.json` (`micro_batch_size`).
+Значение `global_batch_size` менять не нужно: от него зависит число шагов, и оно одинаково для всех архитектур.
+Перед запуском проверьте `nvidia-smi`: если видеокарта уже занята другими задачами, лучше подождать.
 
-## 9. Подбор LR
+## 8. Подбор LR
 
-Нужно запускать в `tmux`, чтобы обучение не прервалось при закрытии терминала:
+Долгие задачи запускайте в фоновом контейнере (`-d`). Он продолжит работу после закрытия окна PowerShell:
 
-```bash
-tmux new -s lr
-python scripts/lr_search.py --config configs/train/pythia-1.4b.json --output runs/lr_search/pythia-1.4b
+```powershell
+docker compose run -d --name lr-pythia llm python scripts/lr_search.py --config configs/train/pythia-1.4b.json --output runs/lr_search/pythia-1.4b
+docker logs -f lr-pythia
 ```
 
-Отключиться от сессии, не останавливая её: `Ctrl+B`, затем `D`. Вернуться: `tmux attach -t lr`.
-Ожидаемое время — около 1.5 часа (5 значений LR × 20% данных × 1 эпоха).
-Если скрипт предупредит, что лучший LR на краю сетки, нужно добавить значения через `--lrs` и запустить ту же команду ещё раз:
-готовые варианты будут пропущены.
+`Ctrl+C` прекращает только просмотр журнала, сам контейнер продолжает работать.
+Поиск занимает около 1.5 часа: 5 значений LR × 20% данных × 1 эпоха.
 
-Лучший LR нужно вписать в конфиг (`lr`) и сохранить конфиг вместе с `runs/lr_search/pythia-1.4b/lr_search.json`.
+Если скрипт сообщит, что лучший LR оказался на краю сетки, добавьте значения через `--lrs` и запустите поиск ещё раз
+в той же папке: завершённые варианты будут пропущены. Перед повторным запуском удалите старый контейнер (`docker rm lr-pythia`).
 
-## 10. Основная серия: 5 сидов
+Впишите лучший LR в конфиг (`lr`) и сохраните конфиг вместе с `runs/lr_search/pythia-1.4b/lr_search.json`.
 
-```bash
-tmux new -s main
-for s in 0 1 2 3 4; do
-  python scripts/train_lora.py --config configs/train/pythia-1.4b.json --seed $s --output runs/main/pythia-1.4b/s$s || break
-done
+## 9. Основная серия: 5 сидов
+
+Каждая модель обучается 3 эпохи. Чекпойнты сохраняются через каждую четверть эпохи (`save_every_epoch_fraction: 0.25`,
+12 срезов за запуск), а также каждые 30 минут чистого GPU-времени (`save_every_gpu_seconds: 1800`).
+
+- **Срезы по эпохам** задаются шагами оптимизатора, поэтому у всех архитектур они соответствуют одним и тем же примерам.
+  По ним сравниваются архитектуры при равном объёме данных и строятся кривые обучения.
+- **Срезы по GPU-времени** используются для сравнения при равных GPU-часах.
+
+Для каждого чекпойнта в `checkpoints/index.jsonl` записываются эпоха, шаг, токены, GPU-секунды и loss на валидации.
+
+```powershell
+docker compose run -d --name main-pythia llm bash -c "for s in 0 1 2 3 4; do python scripts/train_lora.py --config configs/train/pythia-1.4b.json --seed `$s --output runs/main/pythia-1.4b/s`$s || exit 1; done"
+docker logs -f main-pythia
 ```
 
-Если запуск прервался (`wsl --shutdown`, перезагрузка), нужно продолжить его с последнего чекпойнта:
+Если запуск прервался, продолжите его с последнего чекпойнта (пример для сида 3):
 
-```bash
-python scripts/train_lora.py --config configs/train/pythia-1.4b.json --seed 3 --output runs/main/pythia-1.4b/s3 --resume
+```powershell
+docker rm main-pythia
+docker compose run -d --name resume-s3 llm python scripts/train_lora.py --config configs/train/pythia-1.4b.json --seed 3 --output runs/main/pythia-1.4b/s3 --resume
 ```
 
-После этого нужно перезапустить цикл с оставшимися сидами.
-Оценка: около 1.5–2 часов на эпоху, то есть 3–4 часа на сид и 15–20 часов на серию.
+После этого запустите оставшиеся сиды той же командой, что и серию, перечислив в цикле только их.
+Оценка времени: около 1.5–2 часов на эпоху, то есть 5–6 часов на сид и около суток на серию. Уточните её по первому сиду.
 
+Во время обучения:
 
-## 11. Перенос результатов
+- **`docker logs -f main-pythia`** показывает loss, скорость в токенах в секунду и пиковую память.
+- **`runs\main\pythia-1.4b\s0\gpu_monitor.csv`** — загрузка и память GPU. Если скорость заметно падает, а загрузка
+  GPU при этом 100%, на видеокарте работает чужая задача. Отметьте время: позже эти участки можно исключить из замеров.
+- **Одновременно запускайте только одно обучение.** Два процесса на одной видеокарте искажают и память, и замеры GPU-часов.
 
-Чекпойнты-адаптеры небольшие (десятки мегабайт), поэтому архивировать можно всё:
+## 10. Результаты
 
-```bash
-tar czf ~/results_$(date +%Y%m%d).tar.gz runs dataset/analysis dataset/filtered/filter_report.json env_report_wsl.txt requirements-train.lock.txt
-cp ~/results_*.tar.gz /mnt/e/
+Все результаты сразу сохраняются в `E:\llm_rtl\runs`, переносить их из контейнера не нужно. Чтобы забрать их со стенда,
+заархивируйте папки:
+
+```powershell
+tar.exe -czf results.tar.gz runs dataset/analysis dataset/filtered/filter_report.json env_report.txt requirements-train.lock.txt
 ```
+
+Чекпойнты-адаптеры занимают десятки мегабайт, поэтому архивировать можно всё. Если места не хватает, добавьте
+`--exclude=trainer_state.pt`: это состояние оптимизатора, которое нужно только для продолжения прерванного запуска.

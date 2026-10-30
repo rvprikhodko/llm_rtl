@@ -280,8 +280,16 @@ def main():
 
     # --- state --------------------------------------------------------------------------------
     monitor = GpuMonitor(out / "gpu_monitor.csv")
+    # Epoch slices are defined in optimizer steps, so every architecture is checkpointed after the same examples
+    slice_steps, fraction = [], cfg.get("save_every_epoch_fraction")
+    if fraction:
+        k = 1
+        while round(k * fraction * steps_per_epoch) <= total_steps:
+            slice_steps.append(round(k * fraction * steps_per_epoch))
+            k += 1
+    slice_steps = sorted(set(s for s in slice_steps if s > 0))
     st = {"step": 0, "tokens": 0, "supervised_tokens": 0, "gpu_seconds": 0.0, "wall_seconds": 0.0,
-          "next_token_ckpt": cfg["save_every_tokens"], "next_time_ckpt": cfg["save_every_gpu_seconds"]}
+          "next_token_ckpt": cfg.get("save_every_tokens"), "next_time_ckpt": cfg.get("save_every_gpu_seconds")}
     if args.resume:
         saved = torch.load(state_path, map_location="cpu", weights_only=False)
         set_peft_model_state_dict(model, saved["adapter"])
@@ -301,6 +309,7 @@ def main():
             "train_examples": len(train), "val_examples": len(val),
             "train_truncated": sum(e["truncated"] for e in train), "val_truncated": sum(e["truncated"] for e in val),
             "steps_per_epoch": steps_per_epoch, "total_steps": total_steps, "warmup_steps": warmup,
+            "epoch_slice_steps": slice_steps,
             "train_file_sha256": file_sha256(cfg["train_file"]), "val_file_sha256": file_sha256(cfg["val_file"]),
             "git_commit": git_commit(), "host": platform.node(), "python": sys.version.split()[0],
             "torch": torch.__version__, "cuda": torch.version.cuda, "device": str(device),
@@ -323,8 +332,9 @@ def main():
         name = f"step{st['step']:06d}"
         model.save_pretrained(out / "checkpoints" / name)
         val_loss = evaluate(model, val, cfg, pad_id, device, amp_dtype)
-        row = {"checkpoint": name, "reason": reason, "val_loss": round(val_loss, 5), **{k: st[k] for k in
-               ("step", "tokens", "supervised_tokens", "gpu_seconds", "wall_seconds")}}
+        row = {"checkpoint": name, "reason": reason, "epoch": round(st["step"] / steps_per_epoch, 4),
+               "val_loss": round(val_loss, 5),
+               **{k: st[k] for k in ("step", "tokens", "supervised_tokens", "gpu_seconds", "wall_seconds")}}
         index.write(json.dumps(row) + "\n")
         index.flush()
         torch.save({"adapter": get_peft_model_state_dict(model), "optimizer": optimizer.state_dict(),
@@ -381,21 +391,23 @@ def main():
             metrics.flush()
             print(json.dumps(row))
 
-        reason = None
-        if st["tokens"] >= st["next_token_ckpt"]:
-            reason = "tokens"
+        reasons = []
+        if st["step"] in slice_steps:
+            reasons.append("epoch_slice")
+        if st["next_token_ckpt"] and st["tokens"] >= st["next_token_ckpt"]:
+            reasons.append("tokens")
             while st["next_token_ckpt"] <= st["tokens"]:
                 st["next_token_ckpt"] += cfg["save_every_tokens"]
-        if st["gpu_seconds"] >= st["next_time_ckpt"]:
-            reason = "gpu_time" if reason is None else reason + "+gpu_time"
+        if st["next_time_ckpt"] and st["gpu_seconds"] >= st["next_time_ckpt"]:
+            reasons.append("gpu_time")
             while st["next_time_ckpt"] <= st["gpu_seconds"]:
                 st["next_time_ckpt"] += cfg["save_every_gpu_seconds"]
         if st["step"] == total_steps:
-            reason = "final"
+            reasons.append("final")
         elif st["step"] == args.stop_at_step:
-            reason = "stop" if reason is None else reason + "+stop"
-        if reason:
-            save_checkpoint(reason)
+            reasons.append("stop")
+        if reasons:
+            save_checkpoint("+".join(reasons))
         if st["step"] == args.stop_at_step and st["step"] < total_steps:
             print(f"stopped at step {st['step']}; continue with --resume")
             break

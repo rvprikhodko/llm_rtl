@@ -1,0 +1,41 @@
+# Usage from the repository root (PowerShell or WSL):
+#   docker compose build
+#   docker compose run --rm llm python scripts/train_lora.py --help
+# Proxy, Harbor base image and Nexus index are taken from environment variables of the same names.
+services:
+  llm:
+    build:
+      context: .
+      dockerfile: docker/train.Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL-https://download.pytorch.org/whl/cu128}
+        PIP_INDEX_URL_OVERRIDE: ${PIP_INDEX_URL:-}
+        INSTALL_MAMBA: ${INSTALL_MAMBA:-0}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: llm-rtl-train:latest
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - hf-cache:/cache/huggingface
+    environment:
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+      http_proxy: ${HTTP_PROXY:-}
+      https_proxy: ${HTTPS_PROXY:-}
+      no_proxy: ${NO_PROXY:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+    shm_size: 8gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  hf-cache:

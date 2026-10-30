@@ -50,7 +50,7 @@ def main():
             sys.exit(f"{run} exists; use a new --output")
         cmd = [sys.executable, str(TRAIN), "--config", args.config, "--output", str(run)]
         for item in args.set + [f"train_file={longest}", f"micro_batch_size={size}", f"max_steps={args.steps}",
-                                "train_fraction=1.0", "log_every_steps=1", "save_every_tokens=1000000000000",
+                                "train_fraction=1.0", "log_every_steps=1", "save_every_epoch_fraction=null", "save_every_tokens=null",
                                 "save_every_gpu_seconds=1000000000"]:
             cmd += ["--set", item]
         print(f"micro_batch_size={size}: probing")
