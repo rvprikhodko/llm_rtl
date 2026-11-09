@@ -12,6 +12,7 @@ Usage:
   python scripts/train_lora.py --config configs/train/pythia-1.4b.json --seed 0 --output runs/pythia-1.4b/s0
   python scripts/train_lora.py --config ... --output runs/... --resume          # continue an interrupted run
   python scripts/train_lora.py --config ... --set lr=1e-4 --set train_fraction=0.2   # override config keys
+  python scripts/train_lora.py --config ... --output ... --lr-from runs/lr_search/pythia-1.4b/lr_search.json
 
 A non-finite loss stops the run and writes diverged.json in the output directory.
 """
@@ -196,11 +197,21 @@ def main():
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--stop-at-step", type=int, help="save a checkpoint and exit after this step; continue later with --resume")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="override a config key, e.g. lora.r=8")
+    ap.add_argument("--lr-from", metavar="LR_SEARCH_JSON",
+                    help="take lr from lr_search.json; refuses a result that is on the edge of the grid")
     args = ap.parse_args()
 
     cfg = load_config(args.config, args.set)
     if args.seed is not None:
         cfg["seed"] = args.seed
+    if args.lr_from:
+        search = json.loads(Path(args.lr_from).read_text(encoding="utf-8"))
+        if search.get("best_lr") is None:
+            sys.exit(f"{args.lr_from}: no finished candidates")
+        if search.get("best_on_grid_edge"):
+            sys.exit(f"{args.lr_from}: best lr {search['best_lr']:g} is on the edge of the grid; extend the grid first")
+        cfg["lr"] = search["best_lr"]
+        cfg["lr_source"] = str(args.lr_from)
     out = Path(args.output)
     state_path = out / "trainer_state.pt"
     if out.exists() and any(out.iterdir()) and not args.resume:

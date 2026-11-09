@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 TRAIN = Path(__file__).resolve().parent / "train_lora.py"
-DEFAULT_LRS = [5e-5, 1e-4, 2e-4, 5e-4, 1e-3]
+DEFAULT_LRS = [5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3]
 
 
 def read_final(run):

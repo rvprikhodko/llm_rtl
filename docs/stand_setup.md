@@ -102,9 +102,14 @@ docker compose run -d --name lr-pythia llm python scripts/lr_search.py --config 
 docker logs -f lr-pythia
 ```
 
-Поиск занимает около 1.5 часа: 5 значений LR × 20% данных × 1 эпоха.
+Сетка: `5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3`, одинаковая для всех архитектур. Каждое значение обучается на 20% данных
+в течение 1 эпохи (около 7 минут), весь поиск занимает около 50 минут. Расходящиеся запуски помечаются как `diverged` и в выборе не участвуют.
 
-Впишите лучший LR в конфиг (`lr`) и сохраните конфиг вместе с `runs/lr_search/pythia-1.4b/lr_search.json`.
+Повторный запуск той же команды в той же папке обучает только недостающие значения. Перед ним удалите старый контейнер (`docker rm lr-pythia`).
+Если лучший LR оказался на краю сетки (`best_on_grid_edge`), передайте расширенную сетку целиком через `--lrs`,
+например `--lrs 5e-5 1e-4 2e-4 5e-4 1e-3 2e-3 5e-3 1e-2`.
+
+Вписывать LR в конфиг не нужно: основная серия берёт его из `lr_search.json` (раздел 9).
 
 ## 9. Основная серия: 5 сидов
 
@@ -117,8 +122,19 @@ docker logs -f lr-pythia
 
 Для каждого чекпойнта в `checkpoints/index.jsonl` записываются эпоха, шаг, токены, GPU-секунды и loss на валидации.
 
+Флаг `--lr-from` берёт лучший LR из результатов подбора и записывает источник в `run_manifest.json`.
+Если лучший LR оказался на краю сетки, обучение не запустится: сначала расширьте сетку (раздел 8).
+
+Если в `runs\main\pythia-1.4b` уже лежит серия с другим LR, переименуйте её, чтобы сохранить для сравнения:
+
 ```powershell
-docker compose run -d --name main-pythia llm bash -c "for s in 0 1 2 3 4; do python scripts/train_lora.py --config configs/train/pythia-1.4b.json --seed `$s --output runs/main/pythia-1.4b/s`$s || exit 1; done"
+Rename-Item runs\main\pythia-1.4b pythia-1.4b-lr2e-4
+```
+
+Запуск серии:
+
+```powershell
+docker compose run -d --name main-pythia llm bash -c "for s in 0 1 2 3 4; do python scripts/train_lora.py --config configs/train/pythia-1.4b.json --lr-from runs/lr_search/pythia-1.4b/lr_search.json --seed `$s --output runs/main/pythia-1.4b/s`$s || exit 1; done"
 docker logs -f main-pythia
 ```
 
@@ -126,11 +142,12 @@ docker logs -f main-pythia
 
 ```powershell
 docker rm main-pythia
-docker compose run -d --name resume-s3 llm python scripts/train_lora.py --config configs/train/pythia-1.4b.json --seed 3 --output runs/main/pythia-1.4b/s3 --resume
+docker compose run -d --name resume-s3 llm python scripts/train_lora.py --config configs/train/pythia-1.4b.json --lr-from runs/lr_search/pythia-1.4b/lr_search.json --seed 3 --output runs/main/pythia-1.4b/s3 --resume
 ```
 
 После этого запустите оставшиеся сиды той же командой, что и серию, перечислив в цикле только их.
-Оценка времени: около 1.5–2 часов на эпоху, то есть 5–6 часов на сид и около суток на серию. Уточните её по первому сиду.
+Время по первой серии: около 1.6 GPU-часа на сид (3 эпохи), то есть около 8–9 часов на серию из 5 сидов.
+Если какой-то сид шёл заметно дольше остальных, скорее всего, на видеокарте работала чужая задача: проверьте `gpu_monitor.csv` в папке запуска.
 
 ## 10. Результаты
 
