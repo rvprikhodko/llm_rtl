@@ -32,15 +32,29 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-# Linear layers adapted by default; RWKV names match both attention and feed-forward blocks
+# Linear layers adapted by default; RWKV names match both attention and feed-forward blocks.
+# In training mode the fused Mamba kernels read x_proj, dt_proj and out_proj weights directly,
+# bypassing a LoRA wrapper, so only in_proj (called as a module) can carry an effective adapter.
 DEFAULT_TARGETS = {
     "gpt_neox": ["query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"],
-    # PEFT rejects out_proj and conv1d for Mamba models
-    "mamba": ["in_proj", "x_proj", "dt_proj"],
+    "mamba": ["in_proj"],
     "mamba2": ["in_proj"],
     "rwkv": ["key", "value", "receptance", "output"],
+    "zamba2": ["in_proj", "q_proj", "k_proj", "v_proj", "o_proj", "gate_up_proj", "down_proj", "linear"],
     "llama": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
 }
+# Packages providing fast CUDA kernels; without them transformers silently uses slow PyTorch loops
+KERNEL_PACKAGES = {"mamba": ["mamba_ssm", "causal_conv1d"], "zamba2": ["mamba_ssm", "causal_conv1d"]}
+
+
+def fast_kernels_status(model_type):
+    """Return (available, details) for the CUDA kernels this architecture needs."""
+    import importlib.util
+    if model_type == "rwkv":
+        import transformers.models.rwkv.modeling_rwkv as rwkv
+        return rwkv.rwkv_cuda_kernel is not None, {"rwkv_cuda_kernel": rwkv.rwkv_cuda_kernel is not None}
+    found = {p: importlib.util.find_spec(p) is not None for p in KERNEL_PACKAGES.get(model_type, [])}
+    return all(found.values()), found
 SUBSET_SEED = 1234  # fixed so that hyperparameter search subsets are the same for every architecture
 
 
@@ -72,9 +86,9 @@ def file_sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def encode(record, tokenizer, template, max_len):
+def encode(record, tokenizer, template, max_len, add_bos=False):
     prompt = template.format(instruction=record["Instruction"].strip())
-    p_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+    p_ids = ([tokenizer.bos_token_id] if add_bos else []) + tokenizer(prompt, add_special_tokens=False)["input_ids"]
     r_ids = tokenizer(record["Response"].strip() + "\n", add_special_tokens=False)["input_ids"] + [tokenizer.eos_token_id]
     ids = p_ids + r_ids
     labels = [-100] * len(p_ids) + r_ids
@@ -242,8 +256,9 @@ def main():
         train_records = [train_records[i] for i in sorted(keep)]
     val_records = load_jsonl(cfg["val_file"])
     template, max_len = cfg["prompt_template"], cfg["max_len"]
-    train = [encode(r, tokenizer, template, max_len) for r in train_records]
-    val = [encode(r, tokenizer, template, max_len) for r in val_records]
+    add_bos = cfg.get("add_bos", False)
+    train = [encode(r, tokenizer, template, max_len, add_bos) for r in train_records]
+    val = [encode(r, tokenizer, template, max_len, add_bos) for r in val_records]
     char_lengths = [len(r["Instruction"]) + len(r["Response"]) for r in train_records]
     gbs, mbs = cfg["global_batch_size"], cfg["micro_batch_size"]
     steps_per_epoch = math.ceil(len(train) / gbs)
@@ -255,6 +270,10 @@ def main():
                                                  **cfg.get("model_kwargs", {}))
     model.config.use_cache = False
     model_type = model.config.model_type
+    require_kernels = cfg.get("require_fast_kernels", True) and device.type == "cuda"
+    if require_kernels and model_type != "rwkv" and not fast_kernels_status(model_type)[0]:
+        sys.exit(f"fast CUDA kernels for {model_type} are missing: {fast_kernels_status(model_type)[1]}; "
+                 "rebuild the image with INSTALL_MAMBA=1 or set require_fast_kernels=false")
     lora_cfg = cfg["lora"]
     targets = lora_cfg.get("target_modules") or DEFAULT_TARGETS.get(model_type)
     if not targets:
@@ -326,6 +345,7 @@ def main():
             "torch": torch.__version__, "cuda": torch.version.cuda, "device": str(device),
             "device_name": torch.cuda.get_device_name(0) if device.type == "cuda" else platform.processor(),
             "nvml": monitor.info(),
+            "fast_kernel_packages": fast_kernels_status(model_type)[1] if model_type != "rwkv" else "checked after step 1",
             "versions": {m: __import__(m).__version__ for m in ("transformers", "peft")},
             "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
@@ -376,6 +396,12 @@ def main():
             loss.backward()
             loss_total += loss.item()
         grad_norm = torch.nn.utils.clip_grad_norm_(trainable, cfg.get("grad_clip", 1.0)).item()
+        if st["step"] == 0 and require_kernels and model_type == "rwkv":
+            # the RWKV kernel is fetched from the Hugging Face Hub lazily, during the first CUDA forward pass
+            ok, details = fast_kernels_status(model_type)
+            if not ok:
+                sys.exit(f"RWKV CUDA kernel was not loaded ({details}); install the `kernels` package "
+                         "and allow access to huggingface.co, or set require_fast_kernels=false")
         if not math.isfinite(loss_total):
             (out / "diverged.json").write_text(json.dumps({"step": st["step"] + 1, "loss": str(loss_total)}), encoding="utf-8")
             sys.exit(f"non-finite loss at step {st['step'] + 1}; run marked as diverged")

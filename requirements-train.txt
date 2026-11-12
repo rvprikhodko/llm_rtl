@@ -7,3 +7,5 @@ peft>=0.13
 tokenizers
 numpy
 nvidia-ml-py
+# CUDA kernels from the Hugging Face Hub; transformers uses it for the RWKV wkv kernel
+kernels

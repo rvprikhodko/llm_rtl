@@ -27,5 +27,6 @@
   "save_every_tokens": null,
   "save_every_gpu_seconds": 1800,
   "log_every_steps": 10,
-  "seed": 0
+  "seed": 0,
+  "require_fast_kernels": true
 }

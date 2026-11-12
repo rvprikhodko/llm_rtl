@@ -1,0 +1,35 @@
+{
+  "model": "RWKV/rwkv-4-1b5-pile",
+  "revision": "643585471eaf5821d94dfcb498ab5b94a36b42cf",
+  "model_kwargs": {
+    "context_length": 2048
+  },
+  "train_file": "dataset/filtered/train.jsonl",
+  "val_file": "dataset/filtered/val.jsonl",
+  "prompt_template": "### Instruction:\n{instruction}\n\n### Response:\n",
+  "max_len": 2048,
+  "global_batch_size": 32,
+  "micro_batch_size": 4,
+  "epochs": 3,
+  "lr": 0.0002,
+  "warmup_ratio": 0.03,
+  "min_lr_ratio": 0.1,
+  "weight_decay": 0.0,
+  "grad_clip": 1.0,
+  "lora": {
+    "r": null,
+    "alpha_ratio": 2,
+    "dropout": 0.05,
+    "target_modules": null,
+    "target_trainable_params": 12582912
+  },
+  "gradient_checkpointing": true,
+  "pass_attention_mask": false,
+  "bf16": true,
+  "save_every_epoch_fraction": 0.25,
+  "save_every_tokens": null,
+  "save_every_gpu_seconds": 1800,
+  "log_every_steps": 10,
+  "seed": 0,
+  "require_fast_kernels": true
+}

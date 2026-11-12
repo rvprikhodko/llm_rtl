@@ -8,8 +8,10 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 ARG TORCH_VERSION=
 ARG PIP_INDEX_URL_OVERRIDE=
-# 1 installs mamba-ssm and causal-conv1d CUDA kernels (needed for Mamba runs, adds build time)
-ARG INSTALL_MAMBA=0
+# 1 installs mamba-ssm and causal-conv1d CUDA kernels (needed for Mamba and Zamba2, builds for 20-40 minutes).
+# A failed kernel build does not fail the image: train_lora.py then refuses to train those models.
+ARG INSTALL_MAMBA=1
+ARG MAX_JOBS=8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-venv python3-dev build-essential ninja-build git curl ca-certificates iverilog yosys \
@@ -37,7 +39,14 @@ COPY requirements-train.txt /opt/requirements-train.txt
 RUN set -eu; \
     index="${PIP_INDEX_URL_OVERRIDE:+--index-url $PIP_INDEX_URL_OVERRIDE}"; \
     pip install $index -r /opt/requirements-train.txt; \
-    if [ "$INSTALL_MAMBA" = "1" ]; then pip install $index --no-build-isolation causal-conv1d mamba-ssm; fi; \
+    pip freeze > /opt/requirements-train.lock.txt
+
+RUN set -u; \
+    index="${PIP_INDEX_URL_OVERRIDE:+--index-url $PIP_INDEX_URL_OVERRIDE}"; \
+    if [ "$INSTALL_MAMBA" = "1" ]; then \
+        if MAX_JOBS=$MAX_JOBS pip install $index --no-build-isolation causal-conv1d mamba-ssm; \
+        then echo "mamba kernels: installed"; else echo "WARNING: mamba kernels failed to build" | tee /opt/mamba-kernels-failed; fi; \
+    fi; \
     pip freeze > /opt/requirements-train.lock.txt
 
 WORKDIR /workspace

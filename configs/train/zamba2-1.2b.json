@@ -1,0 +1,33 @@
+{
+  "model": "Zyphra/Zamba2-1.2B",
+  "revision": "6b05bf29d1bb4ca71a36d12f7da4d3120dcde7fe",
+  "add_bos": true,
+  "train_file": "dataset/filtered/train.jsonl",
+  "val_file": "dataset/filtered/val.jsonl",
+  "prompt_template": "### Instruction:\n{instruction}\n\n### Response:\n",
+  "max_len": 2048,
+  "global_batch_size": 32,
+  "micro_batch_size": 4,
+  "epochs": 3,
+  "lr": 0.0002,
+  "warmup_ratio": 0.03,
+  "min_lr_ratio": 0.1,
+  "weight_decay": 0.0,
+  "grad_clip": 1.0,
+  "lora": {
+    "r": null,
+    "alpha_ratio": 2,
+    "dropout": 0.05,
+    "target_modules": null,
+    "target_trainable_params": 12582912
+  },
+  "gradient_checkpointing": true,
+  "pass_attention_mask": true,
+  "bf16": true,
+  "save_every_epoch_fraction": 0.25,
+  "save_every_tokens": null,
+  "save_every_gpu_seconds": 1800,
+  "log_every_steps": 10,
+  "seed": 0,
+  "require_fast_kernels": true
+}
